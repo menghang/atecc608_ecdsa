@@ -41,6 +41,11 @@
 #include "mbedtls/ctr_drbg.h"
 #include "mbedtls/pk.h"
 
+#include "atcacert/atcacert_client.h"
+
+#include "zcust_def_1_signer.h"
+#include "zcust_def_2_device.h"
+
 static const char *TAG = "ATECC608";
 /* globals for mbedtls RNG */
 static mbedtls_entropy_context entropy;
@@ -61,11 +66,11 @@ static int configure_mbedtls_rng(void)
                                 (const unsigned char *)seed, strlen(seed));
     if (ret != 0)
     {
-        ESP_LOGI(TAG, " failed  ! mbedtls_ctr_drbg_seed returned %d", ret);
+        ESP_LOGI(TAG, "failed! mbedtls_ctr_drbg_seed returned %d", ret);
     }
     else
     {
-        ESP_LOGI(TAG, " ok");
+        ESP_LOGI(TAG, "ok");
     }
     return ret;
 }
@@ -85,7 +90,7 @@ static const uint8_t public_key_x509_header[] = {
     0x30, 0x59, 0x30, 0x13, 0x06, 0x07, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x02, 0x01, 0x06, 0x08, 0x2A,
     0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07, 0x03, 0x42, 0x00, 0x04};
 
-static void print_public_key(uint8_t *pubkey)
+static void print_public_key(const uint8_t *pubkey)
 {
     uint8_t buf[128];
     uint8_t *tmp;
@@ -110,6 +115,16 @@ static void print_public_key(uint8_t *pubkey)
     ESP_LOGI(TAG, "\r\n-----BEGIN PUBLIC KEY-----\r\n%s\r\n-----END PUBLIC KEY-----", buf);
 }
 
+static void print_cert(const uint8_t *cert, const size_t cert_len)
+{
+    uint8_t buf[1024];
+    size_t buf_len = sizeof(buf);
+
+    atcab_base64encode(cert, cert_len, (char *)buf, &buf_len);
+    buf[buf_len] = '\0';
+    ESP_LOGI(TAG, "\r\n-----BEGIN CERTIFICATE-----\r\n%s\r\n-----END CERTIFICATE-----", buf);
+}
+
 static int atca_ecdsa_test(void)
 {
     mbedtls_pk_context pkey;
@@ -125,18 +140,18 @@ static int atca_ecdsa_test(void)
     ret = atca_mbedtls_pk_init(&pkey, 0);
     if (ret != 0)
     {
-        ESP_LOGI(TAG, "failed !  atca_mbedtls_pk_init returned %02x", ret);
+        ESP_LOGI(TAG, "failed!  atca_mbedtls_pk_init returned %02x", ret);
         goto exit;
     }
     ESP_LOGI(TAG, "ok");
 #else
-    ESP_LOGI(TAG, " Generating a software private key ...");
+    ESP_LOGI(TAG, "Generating a software private key ...");
     mbedtls_pk_init(&pkey);
     ret = mbedtls_pk_setup(&pkey,
                            mbedtls_pk_info_from_type(MBEDTLS_PK_ECDSA));
     if (ret != 0)
     {
-        ESP_LOGI(TAG, " failed !  mbedtls_pk_setup returned -0x%04x", -ret);
+        ESP_LOGI(TAG, "failed!  mbedtls_pk_setup returned -0x%04x", -ret);
         goto exit;
     }
 
@@ -145,18 +160,18 @@ static int atca_ecdsa_test(void)
                               mbedtls_ctr_drbg_random, &ctr_drbg);
     if (ret != 0)
     {
-        ESP_LOGI(TAG, " failed !  mbedtls_ecp_gen_key returned -0x%04x", -ret);
+        ESP_LOGI(TAG, "failed! mbedtls_ecp_gen_key returned -0x%04x", -ret);
         goto exit;
     }
-    ESP_LOGI(TAG, " ok");
+    ESP_LOGI(TAG, "ok");
 #endif
 
-    ESP_LOGI(TAG, " Generating ECDSA Signature...");
+    ESP_LOGI(TAG, "Generating ECDSA Signature...");
     ret = mbedtls_pk_sign(&pkey, MBEDTLS_MD_SHA256, hash, 0, buf, &olen,
                           mbedtls_ctr_drbg_random, &ctr_drbg);
     if (ret != 0)
     {
-        ESP_LOGI(TAG, "failed ! mbedtls_pk_sign returned -0x%04x", -ret);
+        ESP_LOGI(TAG, "failed !mbedtls_pk_sign returned -0x%04x", -ret);
         goto exit;
     }
     ESP_LOGI(TAG, "ok");
@@ -166,7 +181,7 @@ static int atca_ecdsa_test(void)
                             buf, olen);
     if (ret != 0)
     {
-        ESP_LOGI(TAG, "failed ! mbedtls_pk_verify returned -0x%04x", -ret);
+        ESP_LOGI(TAG, "failed !mbedtls_pk_verify returned -0x%04x", -ret);
         goto exit;
     }
     ESP_LOGI(TAG, "ok");
@@ -195,6 +210,39 @@ static void print_config_zone(void)
                      ii,
                      buf[ii], buf[ii + 1], buf[ii + 2], buf[ii + 3],
                      buf[ii + 4], buf[ii + 5], buf[ii + 6], buf[ii + 7]);
+        }
+    }
+}
+
+static void print_data_zone(uint16_t slot)
+{
+    size_t slot_len;
+    if (slot <= 7)
+    {
+        slot_len = 36;
+    }
+    else if (slot == 8)
+    {
+        slot_len = 416;
+    }
+    else
+    {
+        slot_len = 72;
+    }
+    ESP_LOGI(TAG, "Slot %d ->", slot);
+    uint8_t buf[4] = {0};
+    for (uint16_t ii = 0; ii < slot_len; ii += 4)
+    {
+        ATCA_STATUS ret = atcab_read_bytes_zone(ATCA_ZONE_DATA, slot, ii * 4, buf, 4);
+
+        if (ATCA_SUCCESS != ret)
+        {
+            ESP_LOGI(TAG, "%03d -> read fail-> 0x%02X", ii, ret);
+        }
+        else
+        {
+            ESP_LOGI(TAG, "%03d -> 0x%02X 0x%02X 0x%02X 0x%02X",
+                     ii, buf[0], buf[1], buf[2], buf[3]);
         }
     }
 }
@@ -237,7 +285,7 @@ void app_main(void)
     ret = atcab_is_locked(LOCK_ZONE_DATA, &lock);
     if (ret != 0)
     {
-        ESP_LOGI(TAG, "failed\n  ! atcab_is_locked returned %02x", ret);
+        ESP_LOGI(TAG, "failed! atcab_is_locked returned %02x", ret);
         goto exit;
     }
 
@@ -255,18 +303,50 @@ void app_main(void)
     ret = atcab_info(buf);
     if (ret != 0)
     {
-        ESP_LOGI(TAG, "failed\n  ! atcab_info returned %02x", ret);
+        ESP_LOGI(TAG, "failed! atcab_info returned %02x", ret);
         goto exit;
     }
     ESP_LOGI(TAG, "device info->0x%02X 0x%02X 0x%02X 0x%02X", buf[0], buf[1], buf[2], buf[3]);
 
     print_config_zone();
 
+    uint8_t cert[512] = {0};
+    size_t cert_len = sizeof(cert);
+
+    ret = atcacert_read_cert(&g_cert_def_1_signer, NULL, cert, &cert_len);
+
+    if (ATCA_SUCCESS != ret)
+    {
+        ESP_LOGI(TAG, "atcacert_read_cert fail-> 0x%02X", ret);
+    }
+    else
+    {
+        ESP_LOGI(TAG, "cert_len -> %d", cert_len);
+        print_cert(cert, cert_len);
+    }
+
+    ret = atcacert_read_cert(&g_cert_def_2_device, NULL, cert, &cert_len);
+
+    if (ATCA_SUCCESS != ret)
+    {
+        ESP_LOGI(TAG, "atcacert_read_cert fail-> 0x%02X", ret);
+    }
+    else
+    {
+        ESP_LOGI(TAG, "cert_len -> %d", cert_len);
+        print_cert(cert, cert_len);
+    }
+
+    // for (uint16_t slot = 0; slot < 16; slot++)
+    // {
+    //     print_data_zone(slot);
+    // }
+
     // ESP_LOGI(TAG, "Get the public key...");
     // ret = atcab_get_pubkey(0, pubkey);
     // if (ret != 0)
     // {
-    //     ESP_LOGI(TAG, " failed\n  ! atcab_get_pubkey returned %02x", ret);
+    //     ESP_LOGI(TAG, " failed! atcab_get_pubkey returned %02x", ret);
     //     goto exit;
     // }
     // ESP_LOGI(TAG, "ok");
@@ -276,7 +356,7 @@ void app_main(void)
     // ret = atca_ecdsa_test();
     // if (ret != 0)
     // {
-    //     ESP_LOGE(TAG, " ECDSA sign/verify failed");
+    //     ESP_LOGE(TAG, "ECDSA sign/verify failed");
     //     goto exit;
     // }
     uint8_t random[32] = {0};

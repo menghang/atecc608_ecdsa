@@ -26,7 +26,6 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_system.h"
-#include "esp_spi_flash.h"
 #include "esp_log.h"
 
 /* Cryptoauthlib includes */
@@ -43,6 +42,7 @@
 
 #include "atcacert/atcacert_client.h"
 
+#include "wpc_root_ca.h"
 #include "zcust_def_1_signer.h"
 #include "zcust_def_2_device.h"
 
@@ -51,6 +51,11 @@ static const char *TAG = "ATECC608";
 static mbedtls_entropy_context entropy;
 static mbedtls_ctr_drbg_context ctr_drbg;
 
+static uint8_t cert_chain[1024];   // total certificate chain
+static size_t cert_chain_length;   // totoal certificate length
+static size_t cert_rh_length = 32; // root certificate hash length
+static size_t cert_mc_lenth;       // manufacturer CA certificate length
+static size_t cert_puc_length;     // product unit certificate length
 
 static int configure_mbedtls_rng(void)
 {
@@ -85,39 +90,13 @@ static unsigned char hash[32] = {
     0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea, 0x41, 0x41, 0x40, 0xde, 0x5d, 0xae, 0x22, 0x23,
     0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c, 0xb4, 0x10, 0xff, 0x61, 0xf2, 0x00, 0x15, 0xad};
 
-static const uint8_t public_key_x509_header[] = {
-    0x30, 0x59, 0x30, 0x13, 0x06, 0x07, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x02, 0x01, 0x06, 0x08, 0x2A,
-    0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07, 0x03, 0x42, 0x00, 0x04};
-
-static void print_public_key(const uint8_t *pubkey)
-{
-    uint8_t buf[128];
-    uint8_t *tmp;
-    size_t buf_len = sizeof(buf);
-
-    /* Calculate where the raw data will fit into the buffer */
-    tmp = buf + sizeof(buf) - ATCA_PUB_KEY_SIZE - sizeof(public_key_x509_header);
-
-    /* Copy the header */
-    memcpy(tmp, public_key_x509_header, sizeof(public_key_x509_header));
-
-    /* Copy the key bytes */
-    memcpy(tmp + sizeof(public_key_x509_header), pubkey, ATCA_PUB_KEY_SIZE);
-
-    /* Convert to base 64 */
-    (void)atcab_base64encode(tmp, ATCA_PUB_KEY_SIZE + sizeof(public_key_x509_header), (char *)buf, &buf_len);
-
-    /* Add a null terminator */
-    buf[buf_len] = '\0';
-
-    /* Print out the key */
-    ESP_LOGI(TAG, "\r\n-----BEGIN PUBLIC KEY-----\r\n%s\r\n-----END PUBLIC KEY-----", buf);
-}
-
 static void print_cert(const uint8_t *cert, const size_t cert_len)
 {
     uint8_t buf[1024];
     size_t buf_len = sizeof(buf);
+
+    ESP_LOGI(TAG, "cert ->");
+    ESP_LOG_BUFFER_HEXDUMP(TAG, cert, cert_len, ESP_LOG_INFO);
 
     atcab_base64encode(cert, cert_len, (char *)buf, &buf_len);
     buf[buf_len] = '\0';
@@ -203,46 +182,141 @@ static void print_config_zone(void)
     else
     {
         ESP_LOGI(TAG, "Config zone->");
-        for (uint8_t ii = 0; ii < ATCA_ECC_CONFIG_SIZE; ii += 8)
-        {
-            ESP_LOGI(TAG, "%03d->0x%02X 0x%02X 0x%02X 0x%02X 0x%02X 0x%02X 0x%02X 0x%02X",
-                     ii,
-                     buf[ii], buf[ii + 1], buf[ii + 2], buf[ii + 3],
-                     buf[ii + 4], buf[ii + 5], buf[ii + 6], buf[ii + 7]);
-        }
+        ESP_LOG_BUFFER_HEX(TAG, buf, ATCA_ECC_CONFIG_SIZE);
     }
 }
 
-static void print_data_zone(uint16_t slot)
+static void print_cert_info(const atcacert_def_t *cert_def, const uint8_t *cert, size_t cert_size)
 {
-    size_t slot_len;
-    if (slot <= 7)
+    uint8_t buf[256];
+    int ret = atcacert_get_auth_key_id(cert_def, cert, cert_size, buf);
+    if (0 != ret)
     {
-        slot_len = 36;
-    }
-    else if (slot == 8)
-    {
-        slot_len = 416;
+        ESP_LOGI(TAG, "atcacert_get_auth_key_id fail -> 0x%02X", ret);
     }
     else
     {
-        slot_len = 72;
+        ESP_LOGI(TAG, "auth_key_id ->");
+        ESP_LOG_BUFFER_HEX(TAG, buf, 20);
     }
-    ESP_LOGI(TAG, "Slot %d ->", slot);
-    uint8_t buf[4] = {0};
-    for (uint16_t ii = 0; ii < slot_len; ii += 4)
-    {
-        ATCA_STATUS ret = atcab_read_bytes_zone(ATCA_ZONE_DATA, slot, ii * 4, buf, 4);
 
-        if (ATCA_SUCCESS != ret)
-        {
-            ESP_LOGI(TAG, "%03d -> read fail-> 0x%02X", ii, ret);
-        }
-        else
-        {
-            ESP_LOGI(TAG, "%03d -> 0x%02X 0x%02X 0x%02X 0x%02X",
-                     ii, buf[0], buf[1], buf[2], buf[3]);
-        }
+    // ret = atcacert_get_cert_element();
+
+    size_t cert_sn_size = sizeof(buf);
+    ret = atcacert_get_cert_sn(cert_def, cert, cert_size, buf, &cert_sn_size);
+    if (0 != ret)
+    {
+        ESP_LOGI(TAG, "atcacert_get_cert_sn fail -> 0x%02X", ret);
+    }
+    else
+    {
+        ESP_LOGI(TAG, "cert_sn ->");
+        ESP_LOG_BUFFER_HEX(TAG, buf, cert_sn_size);
+    }
+
+    ret = atcacert_get_comp_cert(cert_def, cert, cert_size, buf);
+    if (0 != ret)
+    {
+        ESP_LOGI(TAG, "atcacert_get_comp_cert fail -> 0x%02X", ret);
+    }
+    else
+    {
+        ESP_LOGI(TAG, "comp_cert ->");
+        ESP_LOG_BUFFER_HEX(TAG, buf, 72);
+    }
+    // ret = atcacert_get_device_data(cert_def,cert, cert_size,);
+
+    atcacert_tm_utc_t timestamp;
+    ret = atcacert_get_expire_date(cert_def, cert, cert_size, &timestamp);
+    if (0 != ret)
+    {
+        ESP_LOGI(TAG, "atcacert_get_expire_date -> 0x%02X", ret);
+    }
+    else
+    {
+        ESP_LOGI(TAG, "expire_date -> %04d-%02d-%02d %02d:%02d:%02d",
+                 timestamp.tm_year + 1900, timestamp.tm_mon + 1, timestamp.tm_mday,
+                 timestamp.tm_hour, timestamp.tm_min, timestamp.tm_sec);
+    }
+
+    ret = atcacert_get_issue_date(cert_def, cert, cert_size, &timestamp);
+    if (0 != ret)
+    {
+        ESP_LOGI(TAG, "atcacert_get_issue_date -> 0x%02X", ret);
+    }
+    else
+    {
+        ESP_LOGI(TAG, "issue_date -> %04d-%02d-%02d %02d:%02d:%02d",
+                 timestamp.tm_year + 1900, timestamp.tm_mon + 1, timestamp.tm_mday,
+                 timestamp.tm_hour, timestamp.tm_min, timestamp.tm_sec);
+    }
+
+    ret = atcacert_get_signature(cert_def, cert, cert_size, buf);
+    if (0 != ret)
+    {
+        ESP_LOGI(TAG, "atcacert_get_signature fail -> 0x%02X", ret);
+    }
+    else
+    {
+        ESP_LOGI(TAG, "signature ->");
+        ESP_LOG_BUFFER_HEX(TAG, buf, 64);
+    }
+
+    ret = atcacert_get_signer_id(cert_def, cert, cert_size, buf);
+    if (0 != ret)
+    {
+        ESP_LOGI(TAG, "atcacert_get_signer_id fail -> 0x%02X", ret);
+    }
+    else
+    {
+        ESP_LOGI(TAG, "signer_id ->");
+        ESP_LOG_BUFFER_HEX(TAG, buf, 2);
+    }
+
+    ret = atcacert_get_subj_key_id(cert_def, cert, cert_size, buf);
+    if (0 != ret)
+    {
+        ESP_LOGI(TAG, "atcacert_get_subj_key_id fail -> 0x%02X", ret);
+    }
+    else
+    {
+        ESP_LOGI(TAG, "subj_key_id ->");
+        ESP_LOG_BUFFER_HEX(TAG, buf, 20);
+    }
+
+    ret = atcacert_get_subj_public_key(cert_def, cert, cert_size, buf);
+    if (0 != ret)
+    {
+        ESP_LOGI(TAG, "atcacert_get_subj_public_key fail -> 0x%02X", ret);
+    }
+    else
+    {
+        ESP_LOGI(TAG, "subj_public_key ->");
+        ESP_LOG_BUFFER_HEX(TAG, buf, 64);
+    }
+
+    const uint8_t *tbs;
+    size_t tbs_size;
+    ret = atcacert_get_tbs(cert_def, cert, cert_size, &tbs, &tbs_size);
+    if (0 != ret)
+    {
+        ESP_LOGI(TAG, "atcacert_get_tbs fail -> 0x%02X", ret);
+    }
+    else
+    {
+        ESP_LOGI(TAG, "tbs ->");
+        ESP_LOG_BUFFER_HEX(TAG, tbs, tbs_size);
+    }
+
+    ret = atcacert_get_tbs_digest(cert_def, cert, cert_size, buf);
+    if (0 != ret)
+    {
+        ESP_LOGI(TAG, "atcacert_get_tbs_digest fail -> 0x%02X", ret);
+    }
+    else
+    {
+        ESP_LOGI(TAG, "tbs_digest ->");
+        ESP_LOG_BUFFER_HEX(TAG, buf, 32);
     }
 }
 
@@ -250,8 +324,8 @@ void app_main(void)
 {
     int ret = 0;
     bool lock;
-    uint8_t buf[ATCA_ECC_CONFIG_SIZE];
-    uint8_t pubkey[ATCA_PUB_KEY_SIZE];
+    uint8_t buf[256];
+    // uint8_t pubkey[ATCA_PUB_KEY_SIZE];
 
     /* Initialize the mbedtls library */
     ret = configure_mbedtls_rng();
@@ -268,87 +342,135 @@ void app_main(void)
     /* Default slave address is same as that of TCUSTOM ATECC608A chips */
 #endif                         /* CONFIG_ATECC608A_TCUSTOM */
     ret = atcab_init(&cfg_ateccx08a_i2c_default);
-    if (ret != 0)
+    if (ATCA_SUCCESS != ret)
     {
-        ESP_LOGI(TAG, "failed! atcab_init returned %02x", ret);
+        ESP_LOGI(TAG, "atcab_init fail -> %02x", ret);
         goto exit;
     }
     else
     {
-        ESP_LOGI(TAG, "ok");
+        ESP_LOGI(TAG, "atcab_init ok");
     }
 
     lock = 0;
-    ESP_LOGI(TAG, " Check the data zone lock status...");
     ret = atcab_is_locked(LOCK_ZONE_DATA, &lock);
-    if (ret != 0)
+    if (ATCA_SUCCESS != ret)
     {
-        ESP_LOGI(TAG, "failed! atcab_is_locked returned %02x", ret);
+        ESP_LOGI(TAG, "atcab_is_locked fail -> %02x", ret);
         goto exit;
     }
 
     if (lock)
     {
-        ESP_LOGI(TAG, "ok: locked");
+        ESP_LOGI(TAG, "atcab_is_locked -> locked");
     }
     else
     {
-        ESP_LOGE(TAG, "unlocked, please lock(configure) the ATECC608A chip with help of esp_cryptoauth_utility and try again");
+        ESP_LOGE(TAG, "atcab_is_locked -> unlocked");
         goto exit;
     }
 
-    ESP_LOGI(TAG, "Get the device info (type)...");
     ret = atcab_info(buf);
-    if (ret != 0)
+    if (ATCA_SUCCESS != ret)
     {
-        ESP_LOGI(TAG, "failed! atcab_info returned %02x", ret);
+        ESP_LOGI(TAG, "atcab_info fail -> %02x", ret);
         goto exit;
     }
-    ESP_LOGI(TAG, "device info->0x%02X 0x%02X 0x%02X 0x%02X", buf[0], buf[1], buf[2], buf[3]);
+    ESP_LOGI(TAG, "device_rev ->");
+    ESP_LOG_BUFFER_HEX(TAG, buf, 4);
 
     print_config_zone();
 
     uint8_t cert[512] = {0};
     size_t cert_len = sizeof(cert);
 
+    ESP_LOGI(TAG, "----- ----- ----- ----- -----");
+    ESP_LOGI(TAG, "----- wpcca1_root_ca -----");
+    ret = atcab_base64decode(wpcca1_root_ca_base64, wpcca1_root_ca_base64_size - 1, cert, &cert_len);
+
+    if (ATCA_SUCCESS != ret)
+    {
+        ESP_LOGI(TAG, "atcab_base64decode fail-> 0x%02X", ret);
+        goto exit;
+    }
+    else
+    {
+        ESP_LOGI(TAG, "cert_len -> %d", cert_len);
+        print_cert(cert, cert_len);
+
+        ret = calib_hw_sha2_256(atcab_get_device(), cert, cert_len, buf);
+        if (ATCA_SUCCESS != ret)
+        {
+            ESP_LOGI(TAG, "calib_hw_sha2_256 fail-> 0x%02X", ret);
+            goto exit;
+        }
+        else
+        {
+            ESP_LOGI(TAG, "SHA256 hash ->");
+            ESP_LOG_BUFFER_HEX(TAG, buf, cert_rh_length);
+
+            memcpy(cert_chain, buf, cert_rh_length);
+        }
+    }
+
+    ESP_LOGI(TAG, "----- ----- ----- ----- -----");
+    ESP_LOGI(TAG, "----- g_cert_def_1_signer -----");
+    cert_len = sizeof(cert);
     ret = atcacert_read_cert(&g_cert_def_1_signer, NULL, cert, &cert_len);
 
-    if (ATCA_SUCCESS != ret)
+    if (0 != ret)
     {
         ESP_LOGI(TAG, "atcacert_read_cert fail-> 0x%02X", ret);
+        goto exit;
     }
     else
     {
         ESP_LOGI(TAG, "cert_len -> %d", cert_len);
-        print_cert(cert, cert_len);
+        cert_mc_lenth = cert_len;
+        print_cert(cert, cert_mc_lenth);
+        print_cert_info(&g_cert_def_1_signer, cert, cert_mc_lenth);
+
+        memcpy(cert_chain + cert_rh_length, cert, cert_mc_lenth);
     }
 
+    ESP_LOGI(TAG, "----- ----- ----- ----- -----");
+    ESP_LOGI(TAG, "----- g_cert_def_2_device -----");
+    cert_len = sizeof(cert);
     ret = atcacert_read_cert(&g_cert_def_2_device, NULL, cert, &cert_len);
 
-    if (ATCA_SUCCESS != ret)
+    if (0 != ret)
     {
         ESP_LOGI(TAG, "atcacert_read_cert fail-> 0x%02X", ret);
+        goto exit;
     }
     else
     {
         ESP_LOGI(TAG, "cert_len -> %d", cert_len);
-        print_cert(cert, cert_len);
+        cert_puc_length = cert_len;
+        print_cert(cert, cert_puc_length);
+        print_cert_info(&g_cert_def_2_device, cert, cert_puc_length);
+
+        memcpy(cert_chain + cert_rh_length + cert_mc_lenth, cert, cert_puc_length);
+        cert_chain_length = cert_rh_length + cert_mc_lenth + cert_puc_length;
     }
 
-    // for (uint16_t slot = 0; slot < 16; slot++)
-    // {
-    //     print_data_zone(slot);
-    // }
+    ESP_LOGI(TAG, "----- ----- ----- ----- -----");
+    ESP_LOGI(TAG, "----- cert_chain -----");
 
-    // ESP_LOGI(TAG, "Get the public key...");
-    // ret = atcab_get_pubkey(0, pubkey);
-    // if (ret != 0)
-    // {
-    //     ESP_LOGI(TAG, " failed! atcab_get_pubkey returned %02x", ret);
-    //     goto exit;
-    // }
-    // ESP_LOGI(TAG, "ok");
-    // print_public_key(pubkey);
+    ESP_LOGI(TAG, "cert_chain_length -> %d", cert_chain_length);
+    print_cert(cert_chain, cert_chain_length);
+
+    ret = calib_hw_sha2_256(atcab_get_device(), cert_chain, cert_chain_length, buf);
+    if (ATCA_SUCCESS != ret)
+    {
+        ESP_LOGI(TAG, "calib_hw_sha2_256 fail-> 0x%02X", ret);
+        goto exit;
+    }
+    else
+    {
+        ESP_LOGI(TAG, "SHA256 hash ->");
+        ESP_LOG_BUFFER_HEX(TAG, buf, 32);
+    }
 
     // /* Perform a Sign/Verify Test */
     // ret = atca_ecdsa_test();
@@ -357,31 +479,39 @@ void app_main(void)
     //     ESP_LOGE(TAG, "ECDSA sign/verify failed");
     //     goto exit;
     // }
-    uint8_t random[32] = {0};
-    ret = atcab_random(random);
-    if (ATCA_SUCCESS != ret)
-    {
-        ESP_LOGE(TAG, "Get random number fails");
-        goto exit;
-    }
-    else
-    {
-        ESP_LOGI(TAG, "Random num1->0x%08X 0x%08X 0x%08X 0x%08X 0x%08X 0x%08X 0x%08X 0x%08X",
-                 *(uint32_t *)random, *((uint32_t *)random + 1), *((uint32_t *)random + 2), *((uint32_t *)random + 3),
-                 *((uint32_t *)random + 4), *((uint32_t *)random + 5), *((uint32_t *)random + 6), *((uint32_t *)random + 7));
-    }
-    ret = atcab_random(random);
-    if (ATCA_SUCCESS != ret)
-    {
-        ESP_LOGE(TAG, "Get random number fails");
-        goto exit;
-    }
-    else
-    {
-        ESP_LOGI(TAG, "Random num2->0x%08X 0x%08X 0x%08X 0x%08X 0x%08X 0x%08X 0x%08X 0x%08X",
-                 *(uint32_t *)random, *((uint32_t *)random + 1), *((uint32_t *)random + 2), *((uint32_t *)random + 3),
-                 *((uint32_t *)random + 4), *((uint32_t *)random + 5), *((uint32_t *)random + 6), *((uint32_t *)random + 7));
-    }
+
+    // uint8_t random[32] = {0};
+    // uint8_t challenge_response[64] = {0};
+
+    // for (uint8_t ii = 0; ii < 5; ii++)
+    // {
+    //     ESP_LOGI(TAG, "challenge try -> %d", ii);
+    //     ret = atcab_random(random);
+    //     if (ATCA_SUCCESS != ret)
+    //     {
+    //         ESP_LOGE(TAG, "atcab_random fail -> %d", ret);
+    //         break;
+    //     }
+    //     else
+    //     {
+    //         ESP_LOGI(TAG, "Random num ->");
+    //         ESP_LOG_BUFFER_HEX(TAG, random, 32);
+    //     }
+    //     for (uint8_t slot = 0; slot <= 1; slot++)
+    //     {
+    //         ESP_LOGI(TAG, "slot -> %d", slot);
+    //         ret = atcacert_get_response(slot, random, challenge_response);
+    //         if (0 != ret)
+    //         {
+    //             ESP_LOGE(TAG, "atcacert_get_response fail -> %d", ret);
+    //         }
+    //         else
+    //         {
+    //             ESP_LOGI(TAG, "challenge response ->");
+    //             ESP_LOG_BUFFER_HEX(TAG, challenge_response, 64);
+    //         }
+    //     }
+    // }
 
 exit:
     fflush(stdout);

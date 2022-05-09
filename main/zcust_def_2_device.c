@@ -111,8 +111,8 @@ const atcacert_def_t g_cert_def_2_device = {
             .count = 15
         },
         { // STDCERT_EXPIRE_DATE
-            .offset = 0,
-            .count = 0
+            .offset = 75,
+            .count = 15
         },
         { // STDCERT_SIGNER_ID
             .offset = 0,

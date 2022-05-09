@@ -51,7 +51,6 @@ static const char *TAG = "ATECC608";
 static mbedtls_entropy_context entropy;
 static mbedtls_ctr_drbg_context ctr_drbg;
 
-#define ATECC608B_ADDR 0x38
 
 static int configure_mbedtls_rng(void)
 {
@@ -265,7 +264,6 @@ void app_main(void)
     cfg_ateccx08a_i2c_default.atcai2c.address = 0x6C;
 #elif CONFIG_ATECC608A_TCUSTOM /* CONFIG_ATECC608A_TFLEX */
     // ESP_LOGI(TAG, "Initialize the ATECC interface for TrustCustom ...");
-    cfg_ateccx08a_i2c_default.atcai2c.address = ATECC608B_ADDR << 1;
     cfg_ateccx08a_i2c_default.atcai2c.baud = 400000;
     /* Default slave address is same as that of TCUSTOM ATECC608A chips */
 #endif                         /* CONFIG_ATECC608A_TCUSTOM */

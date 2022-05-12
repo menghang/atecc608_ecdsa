@@ -74,7 +74,7 @@ static const char *TAG = "ATECC608";
 
 static cert_chain_t cert_chain_slot0;                             // certificate chain
 static uint8_t cert_chain_digests_slot0[ATCA_SHA256_DIGEST_SIZE]; // certificate chain hash
-static uint8_t cert_chain_slot0_pukey[ATCA_ECCP256_PUBKEY_SIZE];  // public key
+static uint8_t cert_chain_slot0_public_key[ATCA_ECCP256_PUBKEY_SIZE];  // public key
 
 static void print_cert(const uint8_t *cert, const size_t cert_len);
 static void print_config_zone(void);
@@ -84,16 +84,16 @@ static int atecc608_get_mfr_ca_cert(const atcacert_def_t *cert_def, uint8_t *cer
 static int atecc608_get_product_unit_cert(const atcacert_def_t *cert_def, uint8_t *cert, size_t *cert_len);
 static int atecc608_get_cert_chain(cert_chain_t *cert_chain);
 static int atecc608_get_digests(const cert_chain_t *cert_chain, uint8_t digest[ATCA_SHA256_DIGEST_SIZE]);
-static int mbedtls_get_cert_pukey(const cert_chain_t *cert_chain, uint8_t pkey[ATCA_ECCP256_PUBKEY_SIZE]);
-static int atecc608_gen_pukey(uint8_t pkey[ATCA_ECCP256_PUBKEY_SIZE]);
+static int mbedtls_get_cert_public_key(const cert_chain_t *cert_chain, uint8_t public_key[ATCA_ECCP256_PUBKEY_SIZE]);
+static int atecc608_gen_public_key(uint8_t public_key[ATCA_ECCP256_PUBKEY_SIZE]);
 static int qi_get_certificate(const cert_chain_t *cert_chain, uint8_t offset_a8, uint8_t length_a8, uint8_t offset_70, uint8_t length_70, const uint8_t **seg, uint16_t *seg_length);
 static int qi_gen_challenge_req(uint8_t challenge_req[AUTH_REQ_CHALLENGE_SIZE]);
 static int qi_gen_tbs_auth(const uint8_t challenge_req[AUTH_REQ_CHALLENGE_SIZE], const uint8_t cert_chain_digests[ATCA_SHA256_DIGEST_SIZE], uint8_t tbs_auth_digest[ATCA_SHA256_DIGEST_SIZE]);
 static int qi_challenge(const uint8_t tbs_auth_digest[ATCA_SHA256_DIGEST_SIZE], uint8_t sig[ATCA_ECCP256_SIG_SIZE]);
 static int qi_test_get_digests(const cert_chain_t *cert_chain);
 static int qi_test_get_certificate(const cert_chain_t *cert_chain);
-static int qi_test_challenge_auth(const uint8_t cert_chain_digest[ATCA_SHA256_DIGEST_SIZE], const uint8_t pukey[ATCA_ECCP256_PUBKEY_SIZE]);
-static int qi_test_case(const cert_chain_t *cert_chain, const uint8_t pukey[ATCA_ECCP256_PUBKEY_SIZE]);
+static int qi_test_challenge_auth(const uint8_t cert_chain_digest[ATCA_SHA256_DIGEST_SIZE], const uint8_t public_key[ATCA_ECCP256_PUBKEY_SIZE]);
+static int qi_test_case(const cert_chain_t *cert_chain, const uint8_t public_key[ATCA_ECCP256_PUBKEY_SIZE]);
 
 static void print_cert(const uint8_t *cert, const size_t cert_len)
 {
@@ -379,8 +379,8 @@ static int atecc608_get_digests(const cert_chain_t *cert_chain, uint8_t digest[A
     return 0;
 }
 
-static int mbedtls_get_cert_pukey(const cert_chain_t *cert_chain,
-                                  uint8_t pkey[ATCA_ECCP256_PUBKEY_SIZE])
+static int mbedtls_get_cert_public_key(const cert_chain_t *cert_chain,
+                                  uint8_t public_key[ATCA_ECCP256_PUBKEY_SIZE])
 {
     mbedtls_x509_crt cert;
     mbedtls_x509_crt_init(&cert);
@@ -415,17 +415,17 @@ static int mbedtls_get_cert_pukey(const cert_chain_t *cert_chain,
     }
 
     size_t pk_index = cert.pk_raw.len - ATCA_ECCP256_PUBKEY_SIZE;
-    memcpy(pkey, cert.pk_raw.p + pk_index, ATCA_ECCP256_PUBKEY_SIZE);
+    memcpy(public_key, cert.pk_raw.p + pk_index, ATCA_ECCP256_PUBKEY_SIZE);
 
     ESP_LOGI(TAG, "cert_public_key ->");
-    ESP_LOG_BUFFER_HEX(TAG, pkey, ATCA_ECCP256_PUBKEY_SIZE);
+    ESP_LOG_BUFFER_HEX(TAG, public_key, ATCA_ECCP256_PUBKEY_SIZE);
 
     return 0;
 }
 
-static int atecc608_gen_pukey(uint8_t pkey[ATCA_ECCP256_PUBKEY_SIZE])
+static int atecc608_gen_public_key(uint8_t public_key[ATCA_ECCP256_PUBKEY_SIZE])
 {
-    ATCA_STATUS ret = atcab_get_pubkey(PVKEY_SLOT_NUM, pkey);
+    ATCA_STATUS ret = atcab_get_pubkey(PVKEY_SLOT_NUM, public_key);
     if (ATCA_SUCCESS != ret)
     {
         ESP_LOGI(TAG, "atcab_get_pubkey fail-> 0x%02X", ret);
@@ -434,7 +434,7 @@ static int atecc608_gen_pukey(uint8_t pkey[ATCA_ECCP256_PUBKEY_SIZE])
     else
     {
         ESP_LOGI(TAG, "gen_public_key ->");
-        ESP_LOG_BUFFER_HEX(TAG, pkey, ATCA_ECCP256_PUBKEY_SIZE);
+        ESP_LOG_BUFFER_HEX(TAG, public_key, ATCA_ECCP256_PUBKEY_SIZE);
     }
     return 0;
 }
@@ -591,7 +591,7 @@ static int qi_test_get_certificate(const cert_chain_t *cert_chain)
 }
 
 static int qi_test_challenge_auth(const uint8_t cert_chain_digest[ATCA_SHA256_DIGEST_SIZE],
-                                  const uint8_t pukey[ATCA_ECCP256_PUBKEY_SIZE])
+                                  const uint8_t public_key[ATCA_ECCP256_PUBKEY_SIZE])
 {
     uint8_t challenge_req[AUTH_REQ_CHALLENGE_SIZE] = {0};
     int ret = qi_gen_challenge_req(challenge_req);
@@ -630,7 +630,7 @@ static int qi_test_challenge_auth(const uint8_t cert_chain_digest[ATCA_SHA256_DI
     }
 
     bool verified;
-    ret = atcab_verify_extern(tbs_auth_digest, signature, pukey, &verified);
+    ret = atcab_verify_extern(tbs_auth_digest, signature, public_key, &verified);
     if (ATCA_SUCCESS != ret)
     {
         ESP_LOGI(TAG, "atcab_verify_extern fail");
@@ -649,7 +649,7 @@ static int qi_test_challenge_auth(const uint8_t cert_chain_digest[ATCA_SHA256_DI
     return 0;
 }
 
-static int qi_test_case(const cert_chain_t *cert_chain, const uint8_t pukey[ATCA_ECCP256_PUBKEY_SIZE])
+static int qi_test_case(const cert_chain_t *cert_chain, const uint8_t public_key[ATCA_ECCP256_PUBKEY_SIZE])
 {
     ESP_LOGI(TAG, "----- qi_test_get_digest -----");
     int ret = qi_test_get_digests(cert_chain);
@@ -676,7 +676,7 @@ static int qi_test_case(const cert_chain_t *cert_chain, const uint8_t pukey[ATCA
     }
 
     ESP_LOGI(TAG, "----- qi_test_challenge_auth -----");
-    ret = qi_test_challenge_auth(cert_chain_digests_slot0, cert_chain_slot0_pukey);
+    ret = qi_test_challenge_auth(cert_chain_digests_slot0, cert_chain_slot0_public_key);
     if (0 != ret)
     {
         ESP_LOGI(TAG, "qi_test_challenge_auth fail");
@@ -781,30 +781,30 @@ void app_main(void)
         ESP_LOGI(TAG, "atecc608_get_digests pass");
     }
 
-    ret = mbedtls_get_cert_pukey(&cert_chain_slot0, cert_chain_slot0_pukey);
+    ret = mbedtls_get_cert_public_key(&cert_chain_slot0, cert_chain_slot0_public_key);
     if (ret != 0)
     {
-        ESP_LOGI(TAG, "mbedtls_get_cert_pukey fail");
+        ESP_LOGI(TAG, "mbedtls_get_cert_public_key fail");
         return;
     }
     else
     {
-        ESP_LOGI(TAG, "mbedtls_get_cert_pukey pass");
+        ESP_LOGI(TAG, "mbedtls_get_cert_public_key pass");
     }
 
-    uint8_t gen_pukey[ATCA_ECCP256_PUBKEY_SIZE];
-    ret = atecc608_gen_pukey(gen_pukey);
+    uint8_t gen_public_key[ATCA_ECCP256_PUBKEY_SIZE];
+    ret = atecc608_gen_public_key(gen_public_key);
     if (ret != 0)
     {
-        ESP_LOGI(TAG, "atecc608_gen_pukey fail");
+        ESP_LOGI(TAG, "atecc608_gen_public_key fail");
         return;
     }
     else
     {
-        ESP_LOGI(TAG, "atecc608_gen_pukey pass");
+        ESP_LOGI(TAG, "atecc608_gen_public_key pass");
     }
 
-    ret = memcmp(cert_chain_slot0_pukey, gen_pukey, ATCA_ECCP256_PUBKEY_SIZE);
+    ret = memcmp(cert_chain_slot0_public_key, gen_public_key, ATCA_ECCP256_PUBKEY_SIZE);
     if (ret != 0)
     {
         ESP_LOGI(TAG, "public key generated from private key and read from cert chain mismatch");
@@ -815,7 +815,7 @@ void app_main(void)
         ESP_LOGI(TAG, "public key generated from private key and read from cert chain match");
     }
 
-    ret = qi_test_case(&cert_chain_slot0, cert_chain_slot0_pukey);
+    ret = qi_test_case(&cert_chain_slot0, cert_chain_slot0_public_key);
     if (ret != 0)
     {
         ESP_LOGI(TAG, "qi_test_case fail");

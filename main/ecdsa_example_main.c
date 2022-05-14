@@ -37,6 +37,8 @@
 #include "mbedtls/sha256.h"
 #include "mbedtls/x509_crt.h"
 
+#include "config.h"
+
 /* certificates */
 #include "wpc_root_ca.h"
 #include "zcust_def_1_signer.h"
@@ -61,6 +63,9 @@
 
 #define PVKEY_SLOT_NUM 0
 
+static const char *TAG = "ATECC608";
+
+#ifdef BASIC_TEST
 typedef struct
 {
     uint8_t cert_chain[MAX_CERT_CHAIN_SIZE]; // certificate chain
@@ -70,33 +75,45 @@ typedef struct
     uint16_t cert_puc_length;                // product unit certificate length
 } cert_chain_t;
 
-static const char *TAG = "ATECC608";
-
 static cert_chain_t cert_chain_slot0;                             // certificate chain
 static uint8_t cert_chain_digests_slot0[ATCA_SHA256_DIGEST_SIZE]; // certificate chain hash
-static uint8_t cert_chain_slot0_public_key[ATCA_ECCP256_PUBKEY_SIZE];  // public key
+#ifdef MORE_TEST
+static uint8_t cert_chain_slot0_public_key[ATCA_ECCP256_PUBKEY_SIZE]; // public key
+#endif
 
 static void print_cert(const uint8_t *cert, const size_t cert_len);
+#ifdef MORE_TEST
 static void print_config_zone(void);
 static int test_verify_certs(void);
 static int atecc608_get_root_cert_hash(const char *cert_base64, size_t cert_base64_size, uint8_t root_cert_hash[ATCA_SHA256_DIGEST_SIZE]);
+#endif
 static int atecc608_get_mfr_ca_cert(const atcacert_def_t *cert_def, uint8_t *cert, size_t *cert_len);
 static int atecc608_get_product_unit_cert(const atcacert_def_t *cert_def, uint8_t *cert, size_t *cert_len);
 static int atecc608_get_cert_chain(cert_chain_t *cert_chain);
 static int atecc608_get_digests(const cert_chain_t *cert_chain, uint8_t digest[ATCA_SHA256_DIGEST_SIZE]);
+#ifdef MORE_TEST
 static int mbedtls_get_cert_public_key(const cert_chain_t *cert_chain, uint8_t public_key[ATCA_ECCP256_PUBKEY_SIZE]);
 static int atecc608_gen_public_key(uint8_t public_key[ATCA_ECCP256_PUBKEY_SIZE]);
+#endif
 static int qi_get_certificate(const cert_chain_t *cert_chain, uint8_t offset_a8, uint8_t length_a8, uint8_t offset_70, uint8_t length_70, const uint8_t **seg, uint16_t *seg_length);
+#ifdef MORE_TEST
 static int qi_gen_challenge_req(uint8_t challenge_req[AUTH_REQ_CHALLENGE_SIZE]);
+#endif
 static int qi_gen_tbs_auth(const uint8_t challenge_req[AUTH_REQ_CHALLENGE_SIZE], const uint8_t cert_chain_digests[ATCA_SHA256_DIGEST_SIZE], uint8_t tbs_auth_digest[ATCA_SHA256_DIGEST_SIZE]);
 static int qi_challenge(const uint8_t tbs_auth_digest[ATCA_SHA256_DIGEST_SIZE], uint8_t sig[ATCA_ECCP256_SIG_SIZE]);
 static int qi_test_get_digests(const cert_chain_t *cert_chain);
 static int qi_test_get_certificate(const cert_chain_t *cert_chain);
+#ifdef MORE_TEST
 static int qi_test_challenge_auth(const uint8_t cert_chain_digest[ATCA_SHA256_DIGEST_SIZE], const uint8_t public_key[ATCA_ECCP256_PUBKEY_SIZE]);
 static int qi_test_case(const cert_chain_t *cert_chain, const uint8_t public_key[ATCA_ECCP256_PUBKEY_SIZE]);
+#else
+static int qi_test_challenge_auth(const uint8_t cert_chain_digest[ATCA_SHA256_DIGEST_SIZE]);
+static int qi_test_case(const cert_chain_t *cert_chain);
+#endif
 
 static void print_cert(const uint8_t *cert, const size_t cert_len)
 {
+#ifdef MORE_TEST
     uint8_t buf[1024];
     size_t buf_len = sizeof(buf);
 
@@ -106,8 +123,10 @@ static void print_cert(const uint8_t *cert, const size_t cert_len)
     atcab_base64encode(cert, cert_len, (char *)buf, &buf_len);
     buf[buf_len] = '\0';
     ESP_LOGI(TAG, "\r\n-----BEGIN CERTIFICATE-----\r\n%s\r\n-----END CERTIFICATE-----", buf);
+#endif
 }
 
+#ifdef MORE_TEST
 static void print_config_zone(void)
 {
     uint8_t buf[ATCA_ECC_CONFIG_SIZE];
@@ -261,6 +280,7 @@ static int atecc608_get_root_cert_hash(const char *cert_base64,
     }
     return 0;
 }
+#endif
 
 static int atecc608_get_mfr_ca_cert(const atcacert_def_t *cert_def, uint8_t *cert, size_t *cert_len)
 {
@@ -305,6 +325,7 @@ static int atecc608_get_product_unit_cert(const atcacert_def_t *cert_def, uint8_
 static int atecc608_get_cert_chain(cert_chain_t *cert_chain)
 {
     size_t cert_chain_buf_length = MAX_CERT_CHAIN_SIZE - sizeof(uint16_t);
+#ifdef MORE_TEST
     int ret = atecc608_get_root_cert_hash(wpcca1_root_ca_base64,
                                           wpcca1_root_ca_base64_size - 1,
                                           cert_chain->cert_chain + sizeof(uint16_t));
@@ -320,7 +341,13 @@ static int atecc608_get_cert_chain(cert_chain_t *cert_chain)
         cert_chain->cert_chain_length = sizeof(uint16_t) + cert_chain->cert_rh_length;
         *(uint16_t *)(cert_chain->cert_chain) = cert_chain->cert_chain_length;
     }
-
+#else
+    int ret = 0;
+    memcpy(cert_chain->cert_chain + sizeof(uint16_t), wpcca1_root_ca_digest, ATCA_SHA256_DIGEST_SIZE);
+    cert_chain->cert_rh_length = ATCA_SHA256_DIGEST_SIZE;
+    cert_chain->cert_chain_length = sizeof(uint16_t) + cert_chain->cert_rh_length;
+    *(uint16_t *)(cert_chain->cert_chain) = cert_chain->cert_chain_length;
+#endif
     cert_chain_buf_length = MAX_CERT_CHAIN_SIZE - cert_chain->cert_chain_length;
     ret = atecc608_get_mfr_ca_cert(&g_cert_def_1_signer,
                                    cert_chain->cert_chain + sizeof(uint16_t) + cert_chain->cert_rh_length,
@@ -379,8 +406,9 @@ static int atecc608_get_digests(const cert_chain_t *cert_chain, uint8_t digest[A
     return 0;
 }
 
+#ifdef MORE_TEST
 static int mbedtls_get_cert_public_key(const cert_chain_t *cert_chain,
-                                  uint8_t public_key[ATCA_ECCP256_PUBKEY_SIZE])
+                                       uint8_t public_key[ATCA_ECCP256_PUBKEY_SIZE])
 {
     mbedtls_x509_crt cert;
     mbedtls_x509_crt_init(&cert);
@@ -438,6 +466,7 @@ static int atecc608_gen_public_key(uint8_t public_key[ATCA_ECCP256_PUBKEY_SIZE])
     }
     return 0;
 }
+#endif
 
 static int qi_get_certificate(const cert_chain_t *cert_chain,
                               uint8_t offset_a8, uint8_t length_a8,
@@ -467,6 +496,7 @@ static int qi_get_certificate(const cert_chain_t *cert_chain,
     return 0;
 }
 
+#ifdef MORE_TEST
 static int qi_gen_challenge_req(uint8_t challenge_req[AUTH_REQ_CHALLENGE_SIZE])
 {
     uint8_t random[RANDOM_NUM_SIZE] = {0};
@@ -485,6 +515,7 @@ static int qi_gen_challenge_req(uint8_t challenge_req[AUTH_REQ_CHALLENGE_SIZE])
 
     return 0;
 }
+#endif
 
 static int qi_gen_tbs_auth(const uint8_t challenge_req[AUTH_REQ_CHALLENGE_SIZE],
                            const uint8_t cert_chain_digests[ATCA_SHA256_DIGEST_SIZE],
@@ -590,9 +621,14 @@ static int qi_test_get_certificate(const cert_chain_t *cert_chain)
     return 0;
 }
 
+#ifdef MORE_TEST
 static int qi_test_challenge_auth(const uint8_t cert_chain_digest[ATCA_SHA256_DIGEST_SIZE],
                                   const uint8_t public_key[ATCA_ECCP256_PUBKEY_SIZE])
+#else
+static int qi_test_challenge_auth(const uint8_t cert_chain_digest[ATCA_SHA256_DIGEST_SIZE])
+#endif
 {
+#ifdef MORE_TEST
     uint8_t challenge_req[AUTH_REQ_CHALLENGE_SIZE] = {0};
     int ret = qi_gen_challenge_req(challenge_req);
     if (0 != ret)
@@ -604,6 +640,12 @@ static int qi_test_challenge_auth(const uint8_t cert_chain_digest[ATCA_SHA256_DI
     {
         ESP_LOGI(TAG, "qi_gen_challenge_req pass");
     }
+#else
+    int ret = 0;
+    const uint8_t challenge_req[AUTH_REQ_CHALLENGE_SIZE] = {
+        0x1b, 0x01, 0x9d, 0xc2, 0xc5, 0xcb, 0xf6, 0x52, 0x81, 0xa6, 0x01, 0x0f, 0x1c, 0x72, 0xe5, 0x8d,
+        0x9e, 0x7c};
+#endif
 
     uint8_t tbs_auth_digest[ATCA_SHA256_DIGEST_SIZE] = {0};
     ret = qi_gen_tbs_auth(challenge_req, cert_chain_digest, tbs_auth_digest);
@@ -629,6 +671,7 @@ static int qi_test_challenge_auth(const uint8_t cert_chain_digest[ATCA_SHA256_DI
         ESP_LOGI(TAG, "qi_challenge pass");
     }
 
+#ifdef MORE_TEST
     bool verified;
     ret = atcab_verify_extern(tbs_auth_digest, signature, public_key, &verified);
     if (ATCA_SUCCESS != ret)
@@ -645,11 +688,15 @@ static int qi_test_challenge_auth(const uint8_t cert_chain_digest[ATCA_SHA256_DI
     {
         ESP_LOGI(TAG, "signature verify pass");
     }
-
+#endif
     return 0;
 }
 
+#ifdef MORE_TEST
 static int qi_test_case(const cert_chain_t *cert_chain, const uint8_t public_key[ATCA_ECCP256_PUBKEY_SIZE])
+#else
+static int qi_test_case(const cert_chain_t *cert_chain)
+#endif
 {
     ESP_LOGI(TAG, "----- qi_test_get_digest -----");
     int ret = qi_test_get_digests(cert_chain);
@@ -676,7 +723,11 @@ static int qi_test_case(const cert_chain_t *cert_chain, const uint8_t public_key
     }
 
     ESP_LOGI(TAG, "----- qi_test_challenge_auth -----");
+#ifdef MORE_TEST
     ret = qi_test_challenge_auth(cert_chain_digests_slot0, cert_chain_slot0_public_key);
+#else
+    ret = qi_test_challenge_auth(cert_chain_digests_slot0);
+#endif
     if (0 != ret)
     {
         ESP_LOGI(TAG, "qi_test_challenge_auth fail");
@@ -688,9 +739,17 @@ static int qi_test_case(const cert_chain_t *cert_chain, const uint8_t public_key
     }
     return 0;
 }
+#endif
 
 void app_main(void)
 {
+    const uint8_t mm[] = {
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+        0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e};
+    ESP_LOGI(TAG, "mm ->");
+    ESP_LOG_BUFFER_HEX(TAG, mm, sizeof(mm));
+
+#ifdef BASIC_TEST
 #ifdef CONFIG_ATECC608A_TNG
     // ESP_LOGI(TAG, "Initialize the ATECC interface for Trust & GO ...");
     cfg_ateccx08a_i2c_default.atcai2c.address = 0x6A;
@@ -741,6 +800,7 @@ void app_main(void)
     ESP_LOGI(TAG, "device_rev ->");
     ESP_LOG_BUFFER_HEX(TAG, buf, 4);
 
+#ifdef MORE_TEST
     print_config_zone();
 
     ret = test_verify_certs();
@@ -753,6 +813,7 @@ void app_main(void)
     {
         ESP_LOGI(TAG, "test_verify_all_certs pass");
     }
+#endif
 
     ret = atecc608_get_cert_chain(&cert_chain_slot0);
     if (0 != ret)
@@ -781,6 +842,7 @@ void app_main(void)
         ESP_LOGI(TAG, "atecc608_get_digests pass");
     }
 
+#ifdef MORE_TEST
     ret = mbedtls_get_cert_public_key(&cert_chain_slot0, cert_chain_slot0_public_key);
     if (ret != 0)
     {
@@ -814,8 +876,13 @@ void app_main(void)
     {
         ESP_LOGI(TAG, "public key generated from private key and read from cert chain match");
     }
+#endif
 
+#ifdef MORE_TEST
     ret = qi_test_case(&cert_chain_slot0, cert_chain_slot0_public_key);
+#else
+    ret = qi_test_case(&cert_chain_slot0);
+#endif
     if (ret != 0)
     {
         ESP_LOGI(TAG, "qi_test_case fail");
@@ -825,4 +892,5 @@ void app_main(void)
     {
         ESP_LOGI(TAG, "qi_test_case pass");
     }
+#endif
 }

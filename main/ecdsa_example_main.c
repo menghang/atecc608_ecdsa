@@ -759,6 +759,7 @@ void app_main(void)
 #elif CONFIG_ATECC608A_TCUSTOM /* CONFIG_ATECC608A_TFLEX */
     // ESP_LOGI(TAG, "Initialize the ATECC interface for TrustCustom ...");
     cfg_ateccx08a_i2c_default.atcai2c.baud = 400000;
+    cfg_ateccx08a_i2c_default.atcai2c.bus = 0;
     /* Default slave address is same as that of TCUSTOM ATECC608A chips */
 #endif                         /* CONFIG_ATECC608A_TCUSTOM */
     int ret = atcab_init(&cfg_ateccx08a_i2c_default);
